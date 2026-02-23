@@ -2063,4 +2063,268 @@ In this way the ELBO provides a global, principled diagnostic of
 variational fit, while the additional moment-based condition ensures
 that key parameters (e.g., the Q--DESN readout coefficients) have
 stabilized.
+
+\section{Online / Streaming VB--LD CAVI Updates}
+\label{sec:online_vbld}
+
+\subsection{Setting and objective}
+We consider sequential data arrival at times $t=1,2,\dots$, with fixed quantile level $p\in(0,1)$ and fixed DESN weights.
+At time $t$ we observe $(y_t,\vect{x}_t)$, where $\vect{x}_t$ is the deterministic Q--DESN design vector constructed from the ESN state recursion and treated as known.
+All notation for the exAL conditional Gaussian representation, the regularized horseshoe prior, and the mean-field family
+\eqref{eq:mf-factorization} remains unchanged.
+
+Our goal is to modify the batch VB--LD CAVI updates in Section~\ref{sec:cavi} into an online procedure that updates
+\[
+q_t(\vect{\beta})\,q_t(\sigma,\gamma)\,q_t(\vect{\lambda},\tau,c^2)\,\prod_{i=1}^t q_i(v_i)\,q_i(s_i)
+\]
+as new observations arrive, without recomputing the batch quantities $\mat{X}^\top\bar{\mat{W}}\mat{X}$ and $\mat{X}^\top\bar{\vect{m}}$ from scratch at each $t$.
+The online procedure preserves the same mean-field factorization and closed-form conjugate updates for $(\vect{\beta},v_t,s_t)$, and it retains the Laplace--Delta approximations for the global non-conjugate blocks $(\sigma,\gamma)$ and $(\vect{\lambda},\tau,c^2)$ described in Section~\ref{subsec:cavi-laplace}.
+The additional approximation (relative to batch MFVB) comes solely from the fact that past local factors $q_i(v_i),q_i(s_i)$ may not be revisited at every $t$; we make this explicit in Section~\ref{subsec:online_variants}.
+
+\subsection{Global vs local variational factors in the streaming regime}
+\label{subsec:online_blocks}
+We emphasize the block structure under mean-field:
+\begin{itemize}
+\item \textbf{Global factors (fixed dimension):}
+$q_\beta(\vect{\beta})$,
+$q_{\sigma,\gamma}(\sigma,\gamma)$,
+$q_{\lambda,\tau,c^2}(\vect{\lambda},\tau,c^2)$.
+\item \textbf{Local per-time factors (one new pair per datum):}
+$q_{v_t}(v_t)$ and $q_{s_t}(s_t)$.
+\end{itemize}
+At each new time $t$, the online update performs (i) local CAVI updates for $(v_t,s_t)$, (ii) an incremental update of the Gaussian global factor $q_\beta$, and (iii) scheduled refreshes of the two Laplace--Delta global factors.
+
+\subsection{Local CAVI updates for the new latent pair $(v_t,s_t)$}
+\label{subsec:online_local_updates}
+The local updates reuse the closed-form CAVI kernels derived in Section~\ref{subsec:cavi-conjugate}.
+For the new observation $(y_t,\vect{x}_t)$, we update $q_{v_t}(v_t)$ and $q_{s_t}(s_t)$ while holding the current global factors
+$q_\beta(\vect{\beta})$, $q_{\sigma,\gamma}(\sigma,\gamma)$, and $q_{\lambda,\tau,c^2}(\vect{\lambda},\tau,c^2)$ fixed.
+
+Specifically, we compute $\bar{\psi}_t$ and $\bar{\chi}_t$ as in \eqref{eq:vb-psibar}--\eqref{eq:vb-chibar} (with expectations taken under the \emph{current} global factors and the current iterate of $q_{s_t}$), and set
+$q_{v_t}$ to the GIG factor in \eqref{eq:vb-qvt}. We then compute $\bar{a}_t$ and $\bar{b}_t$ as in \eqref{eq:vb-abar}--\eqref{eq:vb-bbar} (with expectations taken under the current global factors and the current iterate of $q_{v_t}$), and set $q_{s_t}$ to the truncated normal factor in \eqref{eq:vb-qst}.
+
+\paragraph{Local inner loop (recommended).}
+Because $\bar{\chi}_t$ depends on $s_t$ and $(\bar{a}_t,\bar{b}_t)$ depend on $v_t$, we recommend performing a small number of local alternations (typically $1$--$3$):
+\[
+q_{v_t}\ \leftarrow\ \GIG\!\left(\tfrac12,\bar{\chi}_t,\bar{\psi}_t\right),
+\qquad
+q_{s_t}\ \leftarrow\ N\!\big(m_t^{(0)},v_t^{(0)}\big)\ \text{truncated to }(0,\infty),
+\]
+using the corresponding moment updates
+$m^{(v)}_{1,t}=\E_q[v_t]$, $m^{(v)}_{-1,t}=\E_q[1/v_t]$ and
+$m^{(s)}_t=\E_q[s_t]$, $v^{(s)}_t=\E_q[s_t^2]$.
+All expectations involving the non-conjugate global blocks are computed using the Laplace--Delta operator $\mathcal{M}_i[\cdot]$ in \eqref{eq:elbo-M-operator}, applied to smooth functions of $(\sigma,\gamma)$ and $(\vect{\lambda},\tau,c^2)$ under their current Gaussian approximations.
+
+\subsection{Per-datum effective expectations $\bar{w}_t$ and $\bar{m}_t$}
+\label{subsec:online_messages}
+After the local update at time $t$, we compute the per-datum effective quantities defined in \eqref{eq:vb-wbar}--\eqref{eq:vb-mbar}:
+\[
+\bar{w}_t=\E_q\!\left[\frac{1}{\sigma B(\gamma)v_t}\right],
+\qquad
+\bar{m}_t=\E_q\!\left[
+\frac{y_t-\sigma C(\gamma)|\gamma|s_t-A(\gamma)v_t}{\sigma B(\gamma)v_t}
+\right].
+\]
+Under the mean-field factorization, these expectations separate into moments of $q_{\sigma,\gamma}$, $q_{v_t}$ and $q_{s_t}$.
+A numerically stable decomposition for $\bar{m}_t$ follows from algebraic splitting:
+\begin{align}
+\bar{w}_t
+&=
+\E_q\!\left[\frac{1}{\sigma B(\gamma)}\right]\;
+\E_q\!\left[\frac{1}{v_t}\right],
+\label{eq:online_wbar_fact}\\[2pt]
+\bar{m}_t
+&=
+y_t\,\E_q\!\left[\frac{1}{\sigma B(\gamma)}\right]\E_q\!\left[\frac{1}{v_t}\right]
+-\E_q\!\left[\frac{C(\gamma)|\gamma|}{B(\gamma)}\right]\E_q[s_t]\E_q\!\left[\frac{1}{v_t}\right]
+-\E_q\!\left[\frac{A(\gamma)}{\sigma B(\gamma)}\right],
+\label{eq:online_mbar_fact}
+\end{align}
+where the expectations over $(\sigma,\gamma)$ are evaluated using the Laplace--Delta operator $\mathcal{M}_{\sigma,\gamma}[\cdot]$ from \eqref{eq:elbo-M-operator} under the current Gaussian approximation \eqref{eq:vb-q-sigmagamma}, and the expectations over $(v_t,s_t)$ are computed in closed form from the current GIG and truncated-normal factors \eqref{eq:vb-qvt}--\eqref{eq:vb-qst}.
+Equations \eqref{eq:online_wbar_fact}--\eqref{eq:online_mbar_fact} implement the same definitions as \eqref{eq:vb-wbar}--\eqref{eq:vb-mbar}, specialized to a single time point and expressed in a form that minimizes cancellation.
+
+\subsection{Incremental update of $q_\beta(\vect{\beta})$ in natural parameters}
+\label{subsec:online_beta_update}
+The batch update \eqref{eq:vb-Sigmabeta}--\eqref{eq:vb-mubeta} can be written as a sum of per-datum contributions.
+Let $\bar{\mat{D}}^{-1}$ be the effective prior precision defined in \eqref{eq:vb-Dbar}, and define the accumulated sufficient-statistic matrices/vectors
+\begin{equation}
+\mat{S}_t
+=
+\sum_{i=1}^t \bar{w}_i\,\vect{x}_i\vect{x}_i^\top,
+\qquad
+\vect{g}_t
+=
+\sum_{i=1}^t \bar{m}_i\,\vect{x}_i,
+\label{eq:online_S_g}
+\end{equation}
+where $(\bar{w}_i,\bar{m}_i)$ are defined by \eqref{eq:vb-wbar}--\eqref{eq:vb-mbar} (or equivalently by the factored forms \eqref{eq:online_wbar_fact}--\eqref{eq:online_mbar_fact} at each $i$).
+Then the batch Gaussian update at time $t$ is
+\begin{equation}
+q_{\beta,t}(\vect{\beta})
+=
+N_k\!\big(\vect{\mu}_{\beta,t},\mat{\Sigma}_{\beta,t}\big),
+\qquad
+\mat{\Sigma}_{\beta,t}
+=
+\big(\mat{S}_t+\bar{\mat{D}}^{-1}_t\big)^{-1},
+\qquad
+\vect{\mu}_{\beta,t}
+=
+\mat{\Sigma}_{\beta,t}\,\vect{g}_t,
+\label{eq:online_qbeta_batchform}
+\end{equation}
+where we emphasize that $\bar{\mat{D}}^{-1}_t$ depends on the current horseshoe factor $q_{\lambda,\tau,c^2}$ through \eqref{eq:vb-Dbar}.
+
+\paragraph{Natural-parameter representation.}
+Define the precision and precision-mean (natural) parameters
+\begin{equation}
+\mat{P}_t := \mat{\Sigma}_{\beta,t}^{-1},
+\qquad
+\vect{h}_t := \mat{P}_t\,\vect{\mu}_{\beta,t}.
+\label{eq:online_natural_defs}
+\end{equation}
+From \eqref{eq:online_qbeta_batchform}, we have
+\begin{equation}
+\mat{P}_t = \mat{S}_t+\bar{\mat{D}}^{-1}_t,
+\qquad
+\vect{h}_t = \vect{g}_t.
+\label{eq:online_P_h_batch}
+\end{equation}
+Since $\mat{S}_t$ and $\vect{g}_t$ are sums over $i\le t$, they admit incremental updates:
+\begin{equation}
+\mat{S}_t = \mat{S}_{t-1} + \bar{w}_t\,\vect{x}_t\vect{x}_t^\top,
+\qquad
+\vect{g}_t = \vect{g}_{t-1} + \bar{m}_t\,\vect{x}_t.
+\label{eq:online_S_g_update}
+\end{equation}
+Combining \eqref{eq:online_P_h_batch} and \eqref{eq:online_S_g_update} yields the core online recursion
+\begin{align}
+\mat{P}_t
+&=
+\mat{P}_{t-1} + \bar{w}_t\,\vect{x}_t\vect{x}_t^\top
++ \big(\bar{\mat{D}}^{-1}_t-\bar{\mat{D}}^{-1}_{t-1}\big),
+\label{eq:online_P_update}\\
+\vect{h}_t
+&=
+\vect{h}_{t-1} + \bar{m}_t\,\vect{x}_t.
+\label{eq:online_h_update}
+\end{align}
+The diagonal adjustment $(\bar{\mat{D}}^{-1}_t-\bar{\mat{D}}^{-1}_{t-1})$ is nonzero only when $q_{\lambda,\tau,c^2}$ is refreshed (Section~\ref{subsec:online_laplace_refresh}), and is inexpensive to apply because $\bar{\mat{D}}^{-1}$ is diagonal.
+Finally,
+\begin{equation}
+\mat{\Sigma}_{\beta,t}=\mat{P}_t^{-1},
+\qquad
+\vect{\mu}_{\beta,t}=\mat{P}_t^{-1}\vect{h}_t.
+\label{eq:online_muSigma_from_Ph}
+\end{equation}
+
+\paragraph{Remark (prior mean).}
+The horseshoe prior \eqref{eq:beta-prior-step0} is centered at zero, so \eqref{eq:online_h_update} contains no additional prior term.
+If a nonzero prior mean $\vect{b}$ were used, then $\vect{h}_t$ would become
+$\vect{h}_t=\vect{g}_t+\bar{\mat{D}}^{-1}_t\vect{b}$, and the diagonal adjustment in \eqref{eq:online_P_update} would be accompanied by the corresponding update to $\vect{h}_t$.
+
+\paragraph{Remark (numerical stability).}
+A stable implementation maintains a Cholesky factorization $\mat{P}_t=\mat{R}_t^\top\mat{R}_t$ and performs rank-1 Cholesky updates for the term $\bar{w}_t\,\vect{x}_t\vect{x}_t^\top$, avoiding explicit matrix inversion at each step.
+The solves in \eqref{eq:online_muSigma_from_Ph} are then carried out via triangular back-substitution.
+
+\subsection{Scheduled Laplace--Delta refreshes for non-conjugate global blocks}
+\label{subsec:online_laplace_refresh}
+The online updates \eqref{eq:online_P_update}--\eqref{eq:online_h_update} require moments of smooth functions of $(\sigma,\gamma)$ and $(\vect{\lambda},\tau,c^2)$ through $\bar{w}_t$, $\bar{m}_t$, $\bar{\psi}_t$, $\bar{\chi}_t$, $\bar{a}_t$, $\bar{b}_t$, and $\bar{\mat{D}}^{-1}_t$.
+We update the two non-conjugate global factors by warm-started Laplace--Delta on a schedule.
+
+\subsubsection*{Horseshoe scales $(\vect{\lambda},\tau,c^2)$ every $M$ steps}
+Every $M$ arrivals, we refresh $q_{\lambda,\tau,c^2}$ by re-solving the Laplace mode/Hessian problem on the transformed coordinates (Section~\ref{subsec:cavi-laplace}) using the current Gaussian moments of $q_{\beta,t}$, in particular
+$\E_q[\beta_j^2]=\mu_{\beta,t,j}^2+(\mat{\Sigma}_{\beta,t})_{jj}$.
+This yields an updated Gaussian approximation \eqref{eq:vb-q-lambda} and updated Laplace--Delta moments
+$\mathcal{M}_{\lambda,\tau,c^2}[V_j^{-1}]$ needed for $\bar{\mat{D}}^{-1}_t$ in \eqref{eq:vb-Dbar}.
+The change in $\bar{\mat{D}}^{-1}_t$ is incorporated in \eqref{eq:online_P_update} as a diagonal adjustment.
+
+\subsubsection*{exAL parameters $(\sigma,\gamma)$ every $K$ steps}
+The block $(\sigma,\gamma)$ is more delicate online because its log-kernel \eqref{eq:sigmagamma-kernel} depends on residual-type terms involving $\vect{x}_i^\top\vect{\beta}$ inside $m_i(\cdot)$ and $\tau_i^2(\cdot)$, so changes in $q_{\beta,t}$ can make previously computed local contributions stale if past local factors are not revisited.
+We therefore recommend refreshing $q_{\sigma,\gamma}$ less frequently, every $K$ steps with $K\ge M$, via warm-started Laplace--Delta on the transformed coordinates \eqref{eq:vb-trans-sigmagamma}, yielding \eqref{eq:vb-q-sigmagamma}.
+To reduce drift, we recommend a rolling-window variant described in Section~\ref{subsec:online_variants}.
+
+\subsection{Two streaming variants and their approximation status}
+\label{subsec:online_variants}
+
+\subsubsection*{(A) Strict streaming (ADF-style) variant}
+In the strict streaming variant, when $(y_t,\vect{x}_t)$ arrives we:
+(i) update only the new local factors $q_{v_t}(v_t)$ and $q_{s_t}(s_t)$ (Section~\ref{subsec:online_local_updates}),
+(ii) compute $(\bar{w}_t,\bar{m}_t)$ (Section~\ref{subsec:online_messages}),
+(iii) update $q_{\beta,t}$ via \eqref{eq:online_P_update}--\eqref{eq:online_h_update},
+and (iv) refresh the global Laplace factors on the schedule in Section~\ref{subsec:online_laplace_refresh}.
+Past local factors $\{q_{v_i},q_{s_i}\}_{i<t}$ are not revisited.
+
+This can be interpreted as an assumed-density-filtering (ADF) style projection: the previous global approximation plays the role of an approximate prior, the new likelihood factor is incorporated through $(v_t,s_t)$, and the result is projected back into the mean-field family.
+Relative to the batch MFVB optimum at time $t$, the approximation arises because the locally optimal factors $\{q_{v_i},q_{s_i}\}_{i<t}$ under the updated global state are not recomputed.
+
+\subsubsection*{(B) Windowed streaming variant (recommended)}
+In the windowed variant, we maintain a rolling window of size $W$ of the most recent indices
+\[
+\mathcal{I}_t=\{t-W+1,\dots,t\}\cap\{1,\dots,t\},
+\]
+and store, for each $i\in\mathcal{I}_t$, the triplet $(\vect{x}_i,\bar{w}_i,\bar{m}_i)$ and the local moments of $q_{v_i}$ and $q_{s_i}$.
+At each arrival $t$ we still perform the strict streaming steps for the new datum.
+In addition, whenever we refresh $q_{\sigma,\gamma}$ (every $K$ steps), we optionally perform $1$--$2$ local backfitting passes over $i\in\mathcal{I}_t$:
+\[
+\{q_{v_i},q_{s_i}\}_{i\in\mathcal{I}_t}\ \longleftarrow\ \text{local CAVI under current globals},
+\]
+and then re-optimize the Laplace objective for $(\sigma,\gamma)$ using only window contributions (plus the hyperpriors).
+This reduces drift by ensuring that the $(\sigma,\gamma)$ update is informed by residual structure consistent with the current $q_{\beta,t}$ over recent data.
+
+When local factors in the window are revised, the corresponding effective quantities $(\bar{w}_i,\bar{m}_i)$ may change.
+To keep $q_{\beta,t}$ consistent with the window revision without recomputing from scratch, we apply a window correction to the natural parameters:
+\begin{align}
+\mat{P}_t
+&\leftarrow
+\mat{P}_t
++ \sum_{i\in\mathcal{I}_t}\big(\bar{w}_i^{\,\text{new}}-\bar{w}_i^{\,\text{old}}\big)\,\vect{x}_i\vect{x}_i^\top
++ \big(\bar{\mat{D}}^{-1}_t-\bar{\mat{D}}^{-1}_{t^-}\big),
+\label{eq:online_window_P_correction}\\
+\vect{h}_t
+&\leftarrow
+\vect{h}_t
++ \sum_{i\in\mathcal{I}_t}\big(\bar{m}_i^{\,\text{new}}-\bar{m}_i^{\,\text{old}}\big)\,\vect{x}_i,
+\label{eq:online_window_h_correction}
+\end{align}
+where $t^-$ denotes the state immediately before the window revision, and $\bar{\mat{D}}^{-1}_{t^-}$ is the prior precision before any horseshoe refresh performed during the same maintenance step.
+This correction is feasible precisely because the batch statistics $\mat{S}_t$ and $\vect{g}_t$ in \eqref{eq:online_S_g} are sums of per-datum contributions.
+Relative to strict streaming, windowed streaming more closely tracks the batch MFVB fixed point while retaining bounded memory and computation.
+
+\subsection{Online VB--LD CAVI algorithm (pseudocode)}
+\label{subsec:online_algorithm}
+We summarize the online procedure. The algorithm applies to a single fixed quantile level $p$ and assumes the ESN weights are fixed.
+
+\paragraph{Inputs.}
+Initial batch window length $T_0$; refresh periods $M$ and $K$ with $K\ge M$; rolling-window size $W$ (set $W=0$ for strict streaming); local inner-loop count $L_{\mathrm{loc}}\in\{1,2,3\}$.
+
+\paragraph{Initialization (batch warm start).}
+Run the batch VB--LD CAVI algorithm (Section~\ref{subsec:cavi-summary}) on data $1{:}T_0$ to obtain
+$q_{\beta,T_0}$, $q_{\sigma,\gamma,T_0}$, $q_{\lambda,\tau,c^2,T_0}$ and local factors $\{q_{v_i},q_{s_i}\}_{i=1}^{T_0}$.
+Compute $\mat{P}_{T_0}$ and $\vect{h}_{T_0}$ from \eqref{eq:online_P_h_batch}.
+
+\paragraph{Streaming recursion for $t=T_0+1,T_0+2,\dots$.}
+For each new observation $(y_t,\vect{x}_t)$:
+\begin{enumerate}
+\item \textbf{(Feature step)} Construct $\vect{x}_t$ from the ESN recursion (treated as known at time $t$).
+\item \textbf{(Local step)} With globals fixed at their current values, update $q_{v_t}$ and $q_{s_t}$ by $L_{\mathrm{loc}}$ local alternations using \eqref{eq:vb-qvt} and \eqref{eq:vb-qst}, and record the moments
+$m^{(v)}_{1,t},m^{(v)}_{-1,t},m^{(s)}_t,v^{(s)}_t$.
+\item \textbf{(Messages)} Compute $\bar{w}_t$ and $\bar{m}_t$ using \eqref{eq:vb-wbar}--\eqref{eq:vb-mbar} (or the factored forms \eqref{eq:online_wbar_fact}--\eqref{eq:online_mbar_fact}).
+\item \textbf{(Global regression update)} Update the natural parameters $(\mat{P}_t,\vect{h}_t)$ via \eqref{eq:online_P_update}--\eqref{eq:online_h_update}, then obtain $(\vect{\mu}_{\beta,t},\mat{\Sigma}_{\beta,t})$ via \eqref{eq:online_muSigma_from_Ph}.
+\item \textbf{(Horseshoe refresh, every $M$ steps)} If $t \bmod M = 0$, update $q_{\lambda,\tau,c^2}$ via warm-started Laplace--Delta (Section~\ref{subsec:cavi-laplace}) to obtain a new $\bar{\mat{D}}^{-1}_t$; apply the diagonal adjustment in \eqref{eq:online_P_update}.
+\item \textbf{(exAL refresh, every $K$ steps)} If $t \bmod K = 0$, update $q_{\sigma,\gamma}$ via warm-started Laplace--Delta on the transformed coordinates \eqref{eq:vb-trans-sigmagamma}. If $W>0$ (windowed streaming), optionally backfit local factors over $\mathcal{I}_t$ and apply the corrections \eqref{eq:online_window_P_correction}--\eqref{eq:online_window_h_correction}.
+\end{enumerate}
+
+\paragraph{Outputs.}
+At each time $t$, the updated global factor $q_{\beta,t}(\vect{\beta})$ yields the online estimate of the conditional $p$--quantile as
+\[
+\widehat{Q}_{p,t}(y_t\mid \vect{x}_t)=\vect{x}_t^\top \E_q[\vect{\beta}]=\vect{x}_t^\top\vect{\mu}_{\beta,t}.
+\]
+All additional moments needed for prediction (e.g.\ moments of $(\sigma,\gamma)$ entering the exAL predictive law) are obtained from the current Laplace--Delta global factors using $\mathcal{M}_{\sigma,\gamma}[\cdot]$ and $\mathcal{M}_{\lambda,\tau,c^2}[\cdot]$ as in Section~\ref{subsec:elbo-laplace}.
+
+\paragraph{Computational complexity (high level).}
+Per time step, the dominant cost is the update of the $k\times k$ precision $\mat{P}_t$ and the solve for $\vect{\mu}_{\beta,t}$, which is $O(k^2)$ with rank-1 Cholesky updates (or $O(k^3)$ if naively inverted).
+Local updates are $O(1)$ per alternation aside from evaluating standard special functions for GIG and truncated-normal moments.
+Laplace--Delta refreshes are performed every $M$ and $K$ steps and therefore amortize over time; the $(\sigma,\gamma)$ refresh is constant-dimensional, while the $(\vect{\lambda},\tau,c^2)$ refresh scales with $k$.
+
 \end{document}
