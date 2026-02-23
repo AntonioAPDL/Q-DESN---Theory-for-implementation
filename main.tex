@@ -1279,6 +1279,245 @@ Gaussian Laplace approximations on transformed coordinates, with
 delta-method corrections supplying the moments that couple the blocks
 through the exAL hierarchy and the regularized horseshoe prior.
 
+\section{Online Variational Bayes for Sequential Q--DESN Updating}
+\label{sec:online-vb}
+
+This section extends the batch CAVI scheme to a streaming/online setting
+in which observations arrive sequentially.  The DESN feature map is still
+treated as fixed at the chosen hyperparameters, so at time $t$ we receive
+$(y_t,\vect{x}_t)$ and update the variational approximation without
+reprocessing the full history.
+
+\subsection{Sequential target and mean-field structure}
+
+Let $\Theta=(\vect{\beta},\sigma,\gamma,\vect{\lambda},\tau,c^2)$ and
+$\vect{z}_t=(v_t,s_t)$.  A discounted sequential target can be written as
+\begin{equation}
+  \pi_t(\Theta,\vect{z}_{1:t})
+  \propto
+  \pi_{t-1}(\Theta,\vect{z}_{1:t-1})^{\lambda_f}\,
+  p(y_t,\vect{z}_t\mid \Theta),
+  \qquad
+  0<\lambda_f\le 1,
+  \label{eq:online-power-posterior}
+\end{equation}
+where $\lambda_f=1$ gives standard Bayesian accumulation and
+$\lambda_f<1$ introduces forgetting for regime drift.
+
+At each time $t$ we approximate the new posterior with
+\begin{equation}
+  q_t(\Theta,\vect{z}_t)
+  =
+  q_{t,\beta}(\vect{\beta})\,
+  q_{t,\sigma,\gamma}(\sigma,\gamma)\,
+  q_{t,\lambda,\tau,c^2}(\vect{\lambda},\tau,c^2)\,
+  q_{t,v}(v_t)\,
+  q_{t,s}(s_t),
+  \label{eq:online-mf}
+\end{equation}
+that is, local factors $(v_t,s_t)$ are time-specific, while global factors
+carry forward through time.
+
+\paragraph{Implementation form.}
+An equivalent implementation is to keep
+$q_{t,\lambda,\tau,c^2}$ as an internal Laplace state attached to the
+$\beta$-prior module (rather than as a separate exported variational object),
+as long as it provides the same moments
+$\E_q[1/V_j]$, $\E_q[\log V_j]$ and corresponding ELBO contribution.
+This is algebraically consistent with~\eqref{eq:online-mf}.
+
+\subsection{Local one-step updates}
+
+Conditioned on current global moments, the local factors keep the same
+families as in batch CAVI:
+\begin{align}
+  q_{t,v}(v_t)
+  &=
+  \GIG\!\left(\frac{1}{2},\,\bar{\chi}_t,\,\bar{\psi}_t\right),
+  \label{eq:online-qv}
+  \\
+  q_{t,s}(s_t)
+  &=
+  N\!\big(m_{t}^{(0)},v_{t}^{(0)}\big)
+  \text{ truncated to }(0,\infty),
+  \label{eq:online-qs}
+\end{align}
+with
+\begin{align}
+  \bar{\psi}_t
+  &=
+  \E_{q_t}\!\left[
+    \frac{A(\gamma)^2}{\sigma B(\gamma)}+\frac{2}{\sigma}
+  \right],
+  \\
+  \bar{\chi}_t
+  &=
+  \E_{q_t}\!\left[
+    \frac{\delta_t^2}{\sigma B(\gamma)}
+  \right],
+  \qquad
+  \delta_t
+  =
+  y_t-\vect{x}_t^\top\vect{\beta}
+    -\sigma C(\gamma)|\gamma|\,s_t,
+  \\
+  v_t^{(0)}
+  &=
+  \bar{a}_t^{-1},
+  \qquad
+  m_t^{(0)}
+  =
+  \bar{b}_t/\bar{a}_t,
+  \\
+  \bar{a}_t
+  &=
+  1+\E_{q_t}\!\left[
+    \frac{\sigma C_\gamma^2}{B(\gamma)v_t}
+  \right],
+  \qquad
+  C_\gamma=C(\gamma)|\gamma|,
+  \\
+  \bar{b}_t
+  &=
+  \E_{q_t}\!\left[
+    \frac{(y_t-\vect{x}_t^\top\vect{\beta}-A(\gamma)v_t)\,C_\gamma}
+         {B(\gamma)v_t}
+  \right].
+\end{align}
+In practice, one performs a small inner fixed-point loop between
+\eqref{eq:online-qv} and \eqref{eq:online-qs} at each new $t$.
+
+\subsection{Global Gaussian update for $q_{t,\beta}$}
+
+Write the Gaussian factor in natural parameters:
+\[
+  q_{t,\beta}(\vect{\beta})
+  \propto
+  \exp\!\left(
+    \boldsymbol{\eta}_{1,t}^\top\vect{\beta}
+    + \vect{\beta}^\top\boldsymbol{\eta}_{2,t}\vect{\beta}
+  \right),
+\]
+with $\boldsymbol{\eta}_{2,t}$ symmetric negative definite.  The implied
+moments are
+\[
+  \mat{\Sigma}_{\beta,t} = (-2\boldsymbol{\eta}_{2,t})^{-1},
+  \qquad
+  \vect{\mu}_{\beta,t} = \mat{\Sigma}_{\beta,t}\,\boldsymbol{\eta}_{1,t}.
+\]
+
+Define one-observation sufficient statistics
+\begin{align}
+  \bar{w}_t
+  &=
+  \E_{q_t}\!\left[\frac{1}{\sigma B(\gamma)v_t}\right],
+  \\
+  \bar{m}_t
+  &=
+  \E_{q_t}\!\left[
+    \frac{y_t-\sigma C(\gamma)|\gamma|s_t-A(\gamma)v_t}
+         {\sigma B(\gamma)v_t}
+  \right],
+  \\
+  \bar{\mat{D}}_t^{-1}
+  &=
+  \mathrm{diag}\!\big(
+    \E_{q_t}[1/V_1],\dots,\E_{q_t}[1/V_k]
+  \big).
+\end{align}
+Then a damped online natural-gradient style update is
+\begin{align}
+  \boldsymbol{\eta}_{2,t}
+  &=
+  (1-\rho_t)\,\lambda_f\,\boldsymbol{\eta}_{2,t-1}
+  +
+  \rho_t
+  \left[
+    -\frac{1}{2}
+    \Big(
+      \bar{w}_t\,\vect{x}_t\vect{x}_t^\top
+      + \bar{\mat{D}}_t^{-1}
+    \Big)
+  \right],
+  \label{eq:online-beta-eta2}
+  \\
+  \boldsymbol{\eta}_{1,t}
+  &=
+  (1-\rho_t)\,\lambda_f\,\boldsymbol{\eta}_{1,t-1}
+  +
+  \rho_t\,
+  \bar{m}_t\,\vect{x}_t,
+  \label{eq:online-beta-eta1}
+\end{align}
+with step size $\rho_t\in(0,1]$.
+
+\subsection{Online Laplace--Delta for non-conjugate scale blocks}
+
+For the transformed non-conjugate blocks
+$\boldsymbol{\eta}_{\sigma,\gamma}=(\rho,\xi)$ and
+$\boldsymbol{\eta}_{\lambda,\tau,c^2}$, define discounted surrogate
+objectives:
+\begin{align}
+  f_t^{(\sigma,\gamma)}(\boldsymbol{\eta}_{\sigma,\gamma})
+  &=
+  \lambda_f\,f_{t-1}^{(\sigma,\gamma)}(\boldsymbol{\eta}_{\sigma,\gamma})
+  + \Delta_t^{(\sigma,\gamma)}(\boldsymbol{\eta}_{\sigma,\gamma}),
+  \label{eq:online-f-sg}
+  \\
+  f_t^{(\lambda,\tau,c^2)}(\boldsymbol{\eta}_{\lambda,\tau,c^2})
+  &=
+  \lambda_f\,f_{t-1}^{(\lambda,\tau,c^2)}(\boldsymbol{\eta}_{\lambda,\tau,c^2})
+  + \Delta_t^{(\lambda,\tau,c^2)}(\boldsymbol{\eta}_{\lambda,\tau,c^2}),
+  \label{eq:online-f-ltc}
+\end{align}
+where each $\Delta_t$ is the expected one-point contribution under current
+local factors plus the relevant Jacobian/prior terms.
+
+At time $t$, perform one (or a few) Newton/L-BFGS steps toward the mode:
+\[
+  \hat{\boldsymbol{\eta}}_{i,t}
+  \approx
+  \arg\max f_t^{(i)}(\boldsymbol{\eta}_i),
+  \qquad
+  i\in\{(\sigma,\gamma),(\lambda,\tau,c^2)\},
+\]
+and set
+\begin{equation}
+  q_{t,i}(\boldsymbol{\eta}_i)
+  \approx
+  N\!\left(
+    \hat{\boldsymbol{\eta}}_{i,t},
+    \left[-\nabla^2 f_t^{(i)}(\hat{\boldsymbol{\eta}}_{i,t})\right]^{-1}
+  \right).
+  \label{eq:online-laplace}
+\end{equation}
+Moments needed by \eqref{eq:online-beta-eta2}--\eqref{eq:online-beta-eta1}
+are obtained with the same delta-method machinery used in batch mode.
+
+\subsection{Online algorithm template}
+
+For $t=1,2,\dots$:
+\begin{enumerate}
+  \item Receive $(y_t,\vect{x}_t)$ from the fixed-feature Q--DESN stream.
+  \item Update local $q_{t,v}$ and $q_{t,s}$ using
+  \eqref{eq:online-qv}--\eqref{eq:online-qs}.
+  \item Update $q_{t,\beta}$ through natural parameters using
+  \eqref{eq:online-beta-eta2}--\eqref{eq:online-beta-eta1}.
+  \item Update $q_{t,\sigma,\gamma}$ and $q_{t,\lambda,\tau,c^2}$ with
+  the Laplace--Delta step \eqref{eq:online-laplace}.
+  \item Monitor a rolling ELBO surrogate or parameter drift and continue.
+\end{enumerate}
+
+Typical stable choices are
+$\rho_t=(t_0+t)^{-\kappa}$ with $\kappa\in(0.5,1]$, optional mini-batching,
+and bounded transformed coordinates for numerical robustness.
+
+\paragraph{Relation to batch CAVI.}
+With $\lambda_f=1$ and a Robbins--Monro schedule
+($\sum_t\rho_t=\infty$, $\sum_t\rho_t^2<\infty$), the online recursion is a
+stochastic approximation to the same fixed point targeted by the batch
+CAVI/Laplace--Delta equations in Section~\ref{sec:cavi}.
+
 \section{Evidence Lower Bound (ELBO)}
 \label{sec:elbo}
 
